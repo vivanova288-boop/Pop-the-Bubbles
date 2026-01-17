@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>Pop the Plural Bubbles - Anti-Overlap</title>
+<link href="https://fonts.googleapis.com/css2?family=Roboto+Condensed:wght@400;700&display=swap" rel="stylesheet">
+<style>
+html, body {
+    margin:0; padding:0; overflow:hidden; 
+    width:100vw; height:100vh; 
+    user-select:none; 
+    background: transparent !important;
+    font-family: 'Roboto Condensed', sans-serif;
+}
+
+#game-canvas {
+    position:absolute; top:0; left:0;
+    width:100vw; height:100vh;
+    display:block; z-index:2;
+    background: transparent;
+}
+
+.volume-control {
+    position: fixed; top: 20px; right: 20px; z-index: 10;
+    background: rgba(12, 13, 23, 0.8); padding: 8px 12px; border-radius: 12px;
+    display: flex; align-items: center; gap: 8px; color: white; border: 1px solid #fff3;
+}
+.volume-control input[type=range] { cursor: pointer; width: 60px; accent-color: #36fa6d; }
+
+.progress-container {
+    position:fixed; top:20px; left:50%; transform:translateX(-50%);
+    width:350px; height:25px; background:rgba(255,255,255,0.2);
+    border-radius:15px; z-index:5; overflow:hidden; border:2px solid #fff7;
+}
+.progress-bar {
+    height:100%; width:0; background:linear-gradient(90deg,#36fa6d 10%,#fff700 100%);
+    transition:width .3s ease;
+}
+
+.status-bar {
+    position:fixed; top:55px; left:50%; transform:translateX(-50%);
+    color:#fff; font-size:1.1rem; z-index:9;
+    background:rgba(0,0,0,0.5); padding:4px 15px; border-radius:12px;
+}
+
+.finish-message {
+    position:fixed; top:50%; left:50%; transform:translate(-50%,-50%);
+    background:rgba(0,0,0,0.9); color:#fff; font-size:1.8rem;
+    padding:30px; border-radius:25px; z-index:100; display:none; text-align:center;
+    border: 2px solid #36fa6d;
+}
+.finish-message button {
+    margin-top:15px; padding:10px 25px; font-size:1.1rem; border-radius:10px; border:none; cursor:pointer; background: #36fa6d;
+}
+
+.overlay {
+    position: absolute; inset: 0; background: rgba(0,0,0,0.3);
+    display: flex; align-items: center; justify-content: center; z-index: 200;
+}
+.overlay-content {
+    padding: 25px; border-radius: 20px; background: rgba(20,20,20,0.9);
+    border: 3px solid #b482ff; text-align: center; color: #ffeeb3;
+}
+.overlay button {
+    margin-top: 15px; padding: 10px 25px; font-size: 1.1rem; border-radius: 20px;
+    border: none; cursor: pointer; background: #974dff; color: #fff; font-weight: bold;
+}
+
+#countdown {
+    position:fixed; left:50%; top:50%; transform:translate(-50%,-50%);
+    z-index:300; font-size: 100px; color: #fff; font-weight: 700;
+    text-shadow: 0 0 20px #974dff; display: none;
+}
+</style>
+</head>
+<body>
+
+<div class="volume-control">
+  <span>Vol</span>
+  <input type="range" id="volume-slider" min="0" max="1" step="0.1" value="0.5">
+</div>
+
+<div class="progress-container"><div class="progress-bar" id="progress-bar"></div></div>
+<div class="status-bar" id="status-bar"></div>
+<canvas id="game-canvas"></canvas>
+<div class="finish-message" id="finish-message"></div>
+
+<div id="start-overlay" class="overlay">
+    <div class="overlay-content">
+       <h1>Pop the Plural Bubbles</h1>
+        <p>Catch the <b>Plural</b> words (many)!<br>Don't touch <b>Singular</b> words (one)!</p>
+        <button id="start-btn">Start Game</button>
+    </div>
+</div>
+
+<div id="countdown"></div>
+
+<script>
+const sfxCorrect = new Audio('1.mp3');
+const sfxWrong = new Audio('2.mp3');
+const sfxVictory = new Audio('3.mp3');
+const sfxGameOver = new Audio('4.mp3');
+
+let currentVolume = 0.5;
+document.getElementById('volume-slider').oninput = function() { currentVolume = this.value; };
+
+function playSound(audio) {
+    audio.currentTime = 0;
+    audio.volume = currentVolume;
+    audio.play().catch(e => {});
+}
+
+const correctWords = ["children","mice","feet","teeth","men","women","fish","sheep","geese","deer"];
+const wrongWords  = ["child","mouse","foot","tooth","man","woman","a fish","a sheep","goose","a deer"];
+const elementImgs = ['images/1.png','images/2.png','images/3.png','images/4.png'];
+
+let _cw=correctWords.slice(), _ww=wrongWords.slice();
+function shuffle(arr){for(let i=arr.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[arr[i],arr[j]]=[arr[j],arr[i]];}}
+shuffle(_cw); shuffle(_ww);
+
+const IMG_SIZE=110, PROGRESS_COUNT=correctWords.length, ERROR_LIMIT=4;
+let canvas=document.getElementById('game-canvas'), ctx=canvas.getContext('2d');
+function resize(){canvas.width=window.innerWidth;canvas.height=window.innerHeight;}
+resize(); window.addEventListener('resize',resize);
+
+let flyingElements=[];
+let particles=[];
+let wordCorrectQ = _cw.map(w=>({word:w,isCorrect:true}));
+let wordWrongQ   = _ww.map(w=>({word:w,isCorrect:false}));
+let repeatCorrectQueue = [];
+let caughtCorrect = {}, progress=0, errors=0, finished=false, gameStarted=false;
+
+// Новые переменные для контроля появления
+let lastSpawnTime = 0;
+const spawnInterval = 1800; // Появляется один пузырь раз в 1.8 секунды
+const columns = 5; // Делим экран на 5 колонок, чтобы пузыри не накладывались
+
+function createSplash(x, y) {
+    for (let i = 0; i < 15; i++) {
+        particles.push({
+            x: x + IMG_SIZE/2, y: y + IMG_SIZE/2,
+            vx: (Math.random() - 0.5) * 8, vy: (Math.random() - 0.5) * 8,
+            radius: Math.random() * 4 + 1, alpha: 1, color: "rgba(100, 255, 200, 0.8)"
+        });
+    }
+}
+
+function spawnElement() {
+    if(finished || !gameStarted) return;
+    
+    // Проверяем, какие колонки сейчас свободны (где нет пузырей в нижней половине экрана)
+    let availableColumns = [];
+    for (let i = 0; i < columns; i++) {
+        let colX = (canvas.width / columns) * i + (canvas.width / columns / 2) - IMG_SIZE/2;
+        let isBusy = flyingElements.some(el => Math.abs(el.x - colX) < IMG_SIZE && el.y > canvas.height * 0.5);
+        if (!isBusy) availableColumns.push(colX);
+    }
+
+    if (availableColumns.length === 0) return;
+
+    let wordObj;
+    if (Math.random() > 0.4 && (wordCorrectQ.length > 0 || repeatCorrectQueue.length > 0)) {
+        wordObj = repeatCorrectQueue.length > 0 ? repeatCorrectQueue.shift() : wordCorrectQ.shift();
+    } else if (wordWrongQ.length > 0) {
+        wordObj = wordWrongQ.shift();
+    } else return;
+
+    let x = availableColumns[Math.floor(Math.random() * availableColumns.length)];
+    
+    flyingElements.push({
+        x, y: canvas.height, 
+        startY: canvas.height,
+        targetY: canvas.height * 0.15 + Math.random() * (canvas.height * 0.2),
+        word: wordObj.word, 
+        isCorrect: wordObj.isCorrect,
+        imgSrc: elementImgs[Math.floor(Math.random()*elementImgs.length)],
+        t: 0,
+        totalT: 450 + Math.random() * 50, 
+        shake: 0,
+        sliced: false
+    });
+}
+
+function update(timestamp) {
+    // Контроль времени появления
+    if (gameStarted && !finished && timestamp - lastSpawnTime > spawnInterval) {
+        spawnElement();
+        lastSpawnTime = timestamp;
+    }
+
+    // Брызги
+    for(let i = particles.length-1; i>=0; i--) {
+        let p = particles[i];
+        p.x += p.vx; p.y += p.vy; p.alpha -= 0.02;
+        if(p.alpha <= 0) particles.splice(i, 1);
+    }
+
+    // Движение пузырей
+    for(let i = flyingElements.length-1; i>=0; i--) {
+        let el = flyingElements[i];
+        if(!el.sliced) {
+            el.t++;
+            let p = el.t / el.totalT;
+            let height = el.startY - el.targetY;
+            el.y = el.startY - Math.sin(p * Math.PI) * height;
+
+            if(el.shake > 0) el.shake--;
+
+            if(p >= 1) {
+                if(el.isCorrect && !caughtCorrect[el.word]) {
+                    repeatCorrectQueue.push({word: el.word, isCorrect: true});
+                }
+                flyingElements.splice(i, 1);
+            }
+        } else {
+            flyingElements.splice(i, 1);
+        }
+    }
+}
+
+function draw() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    
+    particles.forEach(p => {
+        ctx.save();
+        ctx.globalAlpha = p.alpha;
+        ctx.fillStyle = p.color;
+        ctx.beginPath(); ctx.arc(p.x, p.y, p.radius, 0, Math.PI*2); ctx.fill();
+        ctx.restore();
+    });
+
+    flyingElements.forEach(el => {
+        ctx.save();
+        let shift = el.shake > 0 ? Math.sin(el.shake * 0.8) * 8 : 0;
+        let img = new Image(); img.src = el.imgSrc;
+        
+        ctx.drawImage(img, el.x + shift, el.y, IMG_SIZE, IMG_SIZE);
+        
+        ctx.font = "bold 24px 'Roboto Condensed'";
+        ctx.textAlign = "center";
+        ctx.lineWidth = 5;
+        ctx.strokeStyle = "rgba(0,0,0,0.7)";
+        ctx.strokeText(el.word, el.x + shift + IMG_SIZE/2, el.y + 65);
+        ctx.fillStyle = "white";
+        ctx.fillText(el.word, el.x + shift + IMG_SIZE/2, el.y + 65);
+        ctx.restore();
+    });
+}
+
+canvas.onclick = (e) => {
+    if(!gameStarted || finished) return;
+    const rect = canvas.getBoundingClientRect();
+    const mouseX = e.clientX - rect.left;
+    const mouseY = e.clientY - rect.top;
+
+    for(let i = 0; i < flyingElements.length; i++) {
+        let el = flyingElements[i];
+        if(!el.sliced && mouseX > el.x && mouseX < el.x + IMG_SIZE && mouseY > el.y && mouseY < el.y + IMG_SIZE) {
+            if(el.isCorrect) {
+                el.sliced = true;
+                createSplash(el.x, el.y);
+                progress++;
+                caughtCorrect[el.word] = true;
+                playSound(sfxCorrect);
+                if(progress >= PROGRESS_COUNT) {
+                    finished = true; playSound(sfxVictory);
+                    setTimeout(() => {
+                        document.getElementById('finish-message').style.display = 'block';
+                        document.getElementById('finish-message').innerHTML = "Fantastic!!<br>You know all the Plural Exceptions!<br><button onclick='location.reload()'>Play Again</button>";
+                    }, 500);
+                }
+            } else {
+                el.shake = 25;
+                errors++;
+                playSound(sfxWrong);
+                if(errors >= ERROR_LIMIT) {
+                    finished = true; playSound(sfxGameOver);
+                    setTimeout(() => {
+                        document.getElementById('finish-message').style.display = 'block';
+                        document.getElementById('finish-message').innerHTML = "Game Over!<br><button onclick='location.reload()'>Restart</button>";
+                    }, 500);
+                }
+            }
+            updateUI();
+            break; 
+        }
+    }
+};
+
+function updateUI() {
+    document.getElementById('progress-bar').style.width = (progress/PROGRESS_COUNT*100) + "%";
+    document.getElementById('status-bar').innerText = `Score: ${progress}/${PROGRESS_COUNT} | Mistakes: ${errors}/${ERROR_LIMIT}`;
+}
+
+function loop(timestamp) {
+    update(timestamp); draw();
+    requestAnimationFrame(loop);
+}
+
+document.getElementById('start-btn').onclick = () => {
+    document.getElementById('start-overlay').style.display = 'none';
+    let c = 3, cd = document.getElementById('countdown');
+    cd.style.display = 'block';
+    let timer = setInterval(() => {
+        cd.innerText = c > 0 ? c : "GO!";
+        if(c < 0) { 
+            clearInterval(timer); 
+            cd.style.display='none'; 
+            gameStarted=true; 
+            requestAnimationFrame(loop);
+        }
+        c--;
+    }, 900);
+};
+updateUI();
+</script>
+</body>
+</html>
+</html>
